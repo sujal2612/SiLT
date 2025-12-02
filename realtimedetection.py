@@ -16,36 +16,18 @@ BASE_DIR = app.root_path
 TEXT_SIGN_DIR = os.path.join(BASE_DIR, 'txt')
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 
-model_keras_path = "signlanguagedetectionmodel48x48.keras"
-model_json_path = "signlanguagedetectionmodel48x48.json"
-model_weights_path = "signlanguagedetectionmodel48x48.h5"
+TFLITE_MODEL_PATH = "signlanguagedetectionmodel48x48.tflite"
 
-if not os.path.exists(model_keras_path) and not os.path.exists(model_json_path):
-    raise FileNotFoundError(
-        f"Model files not found. Please train the model first.\n"
-        f"Expected: {model_keras_path} or {model_json_path}"
-    )
+if not os.path.exists(TFLITE_MODEL_PATH):
+    raise FileNotFoundError(f"TFLite model not found: {TFLITE_MODEL_PATH}")
 
-model = None
-try:
-    from keras.models import load_model
-    print("Loading model using standalone Keras (.keras)...")
-    if os.path.exists(model_keras_path):
-        model = load_model(model_keras_path)
-        print("Model loaded successfully from .keras!")
-except ImportError:
-    from tensorflow.keras.models import load_model
-    print("Loading model using TensorFlow Keras...")
-    if os.path.exists(model_keras_path):
-        model = load_model(model_keras_path)
-        print("Model loaded successfully from .keras!")
+interpreter = tf.lite.Interpreter(model_path=TFLITE_MODEL_PATH)
+interpreter.allocate_tensors()
 
-if model is None:
-    from tensorflow.keras.models import model_from_json
-    with open(model_json_path, "r") as json_file:
-        model = model_from_json(json_file.read())
-    model.load_weights(model_weights_path)
-    print("Model loaded from JSON + H5!")
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+print("TFLite model loaded successfully!")
 
 class_names_path = "class_names.json"
 if os.path.exists(class_names_path):
@@ -96,27 +78,24 @@ def health():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    try:
-        data = request.get_json()
-        if "image" not in data:
-            return jsonify({"error": "Image missing"}), 400
+    data = request.get_json()
 
-        processed = preprocess_image(data["image"])
-        if processed is None:
-            return jsonify({"error": "Image processing failed"}), 400
+    if "image" not in data:
+        return jsonify({"error": "No image supplied"}), 400
 
-        pred = model.predict(processed, verbose=0)
-        pred_label = label[np.argmax(pred)]
-        confidence = float(np.max(pred) * 100)
+    processed = preprocess_image(data["image"])
 
-        return jsonify({
-            "prediction": pred_label,
-            "confidence": round(confidence, 2)
-        })
+    interpreter.set_tensor(input_details[0]["index"], processed)
+    interpreter.invoke()
+    predictions = interpreter.get_tensor(output_details[0]["index"])
 
-    except Exception as e:
-        print("Predict error:", e)
-        return jsonify({"error": str(e)}), 500
+    idx = int(np.argmax(predictions))
+    confidence = float(np.max(predictions) * 100)
+
+    return jsonify({
+        "prediction": class_names[idx],
+        "confidence": round(confidence, 2)
+    })
 
 @app.route('/sign-assets')
 def sign_assets():
