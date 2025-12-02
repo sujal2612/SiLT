@@ -1,6 +1,5 @@
 from flask import Flask, render_template, request, jsonify, url_for, send_from_directory, abort
 from flask_cors import CORS
-import cv2
 import numpy as np
 import json
 import os
@@ -17,6 +16,9 @@ BASE_DIR = app.root_path
 TEXT_SIGN_DIR = os.path.join(BASE_DIR, 'txt')
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 
+
+# LOAD TFLITE MODEL
+
 TFLITE_MODEL_PATH = "signlanguagedetectionmodel48x48.tflite"
 
 if not os.path.exists(TFLITE_MODEL_PATH):
@@ -30,38 +32,35 @@ output_details = interpreter.get_output_details()
 
 print("TFLite model loaded successfully!")
 
+
+# LOAD CLASS NAMES
+
 class_names_path = "class_names.json"
 if os.path.exists(class_names_path):
     with open(class_names_path, "r") as f:
-        label = json.load(f)
-    print(f"Loaded {len(label)} class labels!")
+        class_names = json.load(f)   
+    print(f"Loaded {len(class_names)} class labels!")
 else:
     raise FileNotFoundError("class_names.json missing. Train the model first!")
 
-# 🔥 FIXED: Updated preprocessing for 48×48
+
+# IMAGE PREPROCESSING
+
 def extract_features(image):
-    """Convert image → float32 normalized → reshape for model"""
     image = np.array(image, dtype=np.float32)
     image = image.reshape(1, 48, 48, 1)
     return image / 255.0
 
-
 def preprocess_image(image_data):
-    """Convert base64 → grayscale → resize → normalize"""
     try:
         if "," in image_data:
             image_data = image_data.split(",")[1]
 
-       
         img_bytes = base64.b64decode(image_data)
         image = Image.open(BytesIO(img_bytes))
+        image = image.convert("L")
+        image = image.resize((48, 48))
 
-        
-        image = image.convert("L") 
-        # Resize to 48×48 (same as training)
-        image = image.resize((48, 48))  # 🔥 EXACT match to training
-
-        # Convert to numpy + normalization
         return extract_features(image)
 
     except Exception as e:
@@ -69,13 +68,15 @@ def preprocess_image(image_data):
         return None
 
 
+# ROUTES
+
 @app.route('/')
 def index():
     return render_template("index.html")
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'model_loaded': model is not None})
+    return jsonify({'status': 'ok', 'model_loaded': True, "classes": len(class_names)})
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -85,6 +86,8 @@ def predict():
         return jsonify({"error": "No image supplied"}), 400
 
     processed = preprocess_image(data["image"])
+    if processed is None:
+        return jsonify({"error": "Invalid image"}), 400
 
     interpreter.set_tensor(input_details[0]["index"], processed)
     interpreter.invoke()
@@ -94,7 +97,7 @@ def predict():
     confidence = float(np.max(predictions) * 100)
 
     return jsonify({
-        "prediction": class_names[idx],
+        "prediction": class_names[idx],   # ✔ FIXED
         "confidence": round(confidence, 2)
     })
 
@@ -106,7 +109,7 @@ def sign_assets():
             name, ext = os.path.splitext(entry)
             if ext.lower() in ALLOWED_IMAGE_EXTENSIONS and len(name) == 1 and name.isalpha():
                 assets[name.upper()] = url_for('serve_text_sign_asset', filename=entry)
-    return jsonify({'assets': assets, 'expected_classes': label})
+    return jsonify({'assets': assets, 'expected_classes': class_names})  # ✔ FIXED
 
 @app.route('/text-sign/<path:filename>')
 def serve_text_sign_asset(filename):
@@ -135,6 +138,6 @@ def speak():
 
 if __name__ == "__main__":
     print("\n==== Sign Language Detection Server ====")
-    print("Model classes loaded:", len(label))
+    print("Model classes loaded:", len(class_names))
     print("Running at http://localhost:5000\n")
     app.run(debug=True, host="0.0.0.0", port=5000)
